@@ -58,7 +58,7 @@ RULES_SWEEP = dict(
 # selected (t_l, t_h) moves.
 RULES = dict(
     max_ia_risk = 0.30,     # reject any pair whose IA-region risk bound exceeds this
-    max_copy_risk = 0.20,   # reject any pair whose copy-region risk bound exceeds this
+    max_copy_risk = 0.30,   # reject any pair whose copy-region risk bound exceeds this
     min_speedup = None,     # optional floor; None = no floor
 )
 
