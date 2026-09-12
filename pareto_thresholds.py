@@ -43,7 +43,7 @@ COMBOS = [
     dict(model="pointpillars", oracle_dataset="nuscenes", results_dataset="nuscenes",  results_stride=4),
     dict(model="centerpoint",  oracle_dataset="nuscenes", results_dataset="nuscenes",  results_stride=4),
     dict(model="3dssd",        oracle_dataset="kitti",    results_dataset="kitti_raw", results_stride=1),
-    dict(model="pvrcnn",       oracle_dataset="kitti",    results_dataset="kitti_raw", results_stride=1),  # frame alignment lower-confidence, see load()
+    dict(model="pvrcnn",       oracle_dataset="kitti",    results_dataset="kitti_raw", results_stride=1),
     dict(model="m3detr",       oracle_dataset="waymo",    results_dataset="waymo",     results_stride=1),
 ]
 
@@ -276,7 +276,7 @@ def frontier_with_validity(frontier_df, rules):
 
 def frontier_csv_name(rules):
     """Filename encoding the rules that determined validity for this file."""
-    name = f"frontier_ia{rules['max_ia_risk']}_copy{rules['max_copy_risk']}"
+    name = f"rule_ia{rules['max_ia_risk']}_copy{rules['max_copy_risk']}_frontier"
     if rules.get("min_speedup") is not None:
         name += f"_minspeedup{rules['min_speedup']}"
     return name + ".csv"
