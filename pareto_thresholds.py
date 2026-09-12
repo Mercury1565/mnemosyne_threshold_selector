@@ -25,10 +25,11 @@ CONFIG = dict(
     oracle  = "./data/inference_oracle_mc.csv",                # similarity score per frame
     score_col = "S_oracle_ego_obj",                            # oracle column used as the routing score
 
-    TAU    = 0.1,              # per-frame loss tolerance (F1 / mIoU units) above which a frame counts as harmed
-    CONF   = 0.90,             # confidence level of the Clopper-Pearson risk bound
-    CHECKER_MS = 5.0,          # TODO: measure
-    MOTION_COMP_MS = 5.0,      # TODO: measure
+    TAU    = 0.1,                # per-frame loss tolerance (F1 / mIoU units) above which a frame counts as harmed
+    CONF   = 0.90,               # confidence level of the Clopper-Pearson risk bound
+    CHECKER_MS = 5.0,            # TODO: measure
+    MOTION_COMP_MS = 5.0,        # TODO: measure
+    MIN_SCORE_THRESHOLD = 0.25,  # hard floor: t_l never goes below this
 
     RISK_TOLERANCE_GRID = np.round(np.arange(0.10, 1.001, 0.01), 3),  # shared risk caps swept in constrained_thresholds
 
@@ -123,11 +124,15 @@ def load(cfg):
 
     return joined
 
-def SCORE_GRID(tab):
-    """Candidate score thresholds, floored to the data's own min score (rounded down to
-    the nearest 0.01) rather than a hardcoded guess -- anything lower is indistinguishable,
-    since no frame scores below that floor."""
-    floor = np.floor(tab.score.min() * 100) / 100
+def SCORE_GRID(tab, min_threshold):
+    """Candidate score thresholds. Floored to the data's own min score (rounded down
+    to the nearest 0.01), same as before -- but never below `min_threshold`, regardless
+    of what the data's own minimum is. This is a hard domain floor: below it, a frame
+    is trusted with neither IA reuse nor copy, no matter what an aggregate risk bound
+    over the region says -- a thin, statistically-lucky sample at the extreme low end
+    (e.g. score == 0) shouldn't be able to argue its way into skipping fresh inference."""
+    data_floor = np.floor(tab.score.min() * 100) / 100
+    floor = max(data_floor, min_threshold)
     return np.round(np.arange(floor, 1.001, 0.01), 3)
 
 # HELPERS
@@ -259,6 +264,23 @@ def rules_mask(frontier_df, rules):
         mask &= frontier_df.speedup >= rules["min_speedup"]
     return mask
 
+def frontier_with_validity(frontier_df, rules):
+    """Full frontier for the current rules, annotated with a 'valid' column.
+    Valid rows first (sorted by speedup desc), then invalid rows (also sorted by
+    speedup desc) -- so the top of the file is always the best real options, and
+    the bottom documents how far away the disqualified ones were."""
+    annotated = frontier_df.assign(valid=rules_mask(frontier_df, rules))
+    valid_rows = annotated[annotated.valid].sort_values("speedup", ascending=False)
+    invalid_rows = annotated[~annotated.valid].sort_values("speedup", ascending=False)
+    return pd.concat([valid_rows, invalid_rows], ignore_index=True)
+
+def frontier_csv_name(rules):
+    """Filename encoding the rules that determined validity for this file."""
+    name = f"frontier_ia{rules['max_ia_risk']}_copy{rules['max_copy_risk']}"
+    if rules.get("min_speedup") is not None:
+        name += f"_minspeedup{rules['min_speedup']}"
+    return name + ".csv"
+
 def select_thresholds(frontier_df, rules):
     """Fastest frontier pair whose ia_risk/copy_risk both satisfy the rules.
     Returns None if no pair qualifies."""
@@ -386,7 +408,7 @@ def run_combo(base_cfg, combo):
     cfg["out_dir"] = os.path.join(base_cfg["out_dir"], f"{combo['model']}_{combo['oracle_dataset']}")
 
     tab = load(cfg)
-    cfg["GRID"] = SCORE_GRID(tab)
+    cfg["GRID"] = SCORE_GRID(tab, cfg["MIN_SCORE_THRESHOLD"])
 
     rules = rules_with_overrides(RULES)
 
@@ -410,9 +432,9 @@ def run_combo(base_cfg, combo):
         print(f"selected: t_l={selected.t_l}  t_h={selected.t_h}  speedup={selected.speedup:.3f}  "
               f"ia_risk={selected.ia_risk:.3f}  copy_risk={selected.copy_risk:.3f}")
 
-    frontier_display = frontier_df.assign(feasible=rules_mask(frontier_df, rules))
+    frontier_display = frontier_with_validity(frontier_df, rules)
     print("\nPareto frontier:")
-    print(frontier_display.sort_values("speedup", ascending=False).round(3).to_string(index=False))
+    print(frontier_display.round(3).to_string(index=False))
 
     # If I swept a single shared risk tolerance across its whole range, how would the best-achievable t_l/t_h move at every level?
     constrained_df = constrained_thresholds(frontier_df, cfg["RISK_TOLERANCE_GRID"])
@@ -420,6 +442,9 @@ def run_combo(base_cfg, combo):
     os.makedirs(cfg["out_dir"], exist_ok=True)
     curves_png = os.path.join(cfg["out_dir"], cfg["curves_plot_png"])
     tolerance_png = os.path.join(cfg["out_dir"], cfg["tolerance_plot_png"])
+    frontier_csv = os.path.join(cfg["out_dir"], frontier_csv_name(rules))
+    frontier_display.to_csv(frontier_csv, index=False)
+    print(f"\nfrontier (valid/invalid split): {frontier_csv}")
 
     plot_threshold_curves(t_h_curve, t_l_curve, ref_t_l, ref_t_h, rules, cfg, curves_png)
     plot_thresholds_vs_tolerance(constrained_df, tolerance_png)
