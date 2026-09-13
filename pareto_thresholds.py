@@ -291,28 +291,33 @@ def select_thresholds(frontier_df, rules):
     return feasible.loc[feasible.speedup.idxmax()]
 
 def region_deltas(tab, cfg, t_l, t_h):
-    """Mean delta mIoU/accuracy in the IA region and the copy region, for one (t_l, t_h) pair."""
+    """Mean delta mIoU/accuracy in the IA region and the copy region, plus each
+    region's sample size -- a mean over a handful of frames isn't a stable estimate,
+    so the sample size needs to travel with it, not be left implicit."""
     score = tab.score.values
     f1_drop = (tab.previous_f1 - tab.current_f1).values
     miou_drop = (tab.previous_miou - tab.current_miou).values
 
     copy_mask = score >= t_h
-    delta_miou_copy = miou_drop[copy_mask].mean() if copy_mask.sum() else np.nan
-    delta_accuracy_copy = f1_drop[copy_mask].mean() if copy_mask.sum() else np.nan
+    num_copy = int(copy_mask.sum())
+    delta_miou_copy = miou_drop[copy_mask].mean() if num_copy else np.nan
+    delta_accuracy_copy = f1_drop[copy_mask].mean() if num_copy else np.nan
 
     ia_tab = tab.dropna(subset=["loss_ia"])
     ia_mask = (ia_tab.score.values >= t_l) & (ia_tab.score.values < t_h)
-    delta_miou_ia = ia_tab.miou_gap.values[ia_mask].mean() if ia_mask.sum() else np.nan
-    delta_accuracy_ia = ia_tab.f1_gap.values[ia_mask].mean() if ia_mask.sum() else np.nan
+    num_ia = int(ia_mask.sum())
+    delta_miou_ia = ia_tab.miou_gap.values[ia_mask].mean() if num_ia else np.nan
+    delta_accuracy_ia = ia_tab.f1_gap.values[ia_mask].mean() if num_ia else np.nan
 
-    return delta_miou_ia, delta_accuracy_ia, delta_miou_copy, delta_accuracy_copy
+    return delta_miou_ia, delta_accuracy_ia, delta_miou_copy, delta_accuracy_copy, num_ia, num_copy
 
 def frontier_with_deltas(frontier_df, tab, cfg):
-    """Frontier rows annotated with mean delta mIoU/accuracy in each region."""
+    """Frontier rows annotated with mean delta mIoU/accuracy and sample size in each region."""
     deltas = [region_deltas(tab, cfg, row.t_l, row.t_h) for row in frontier_df.itertuples()]
-    delta_miou_ia, delta_accuracy_ia, delta_miou_copy, delta_accuracy_copy = zip(*deltas)
+    delta_miou_ia, delta_accuracy_ia, delta_miou_copy, delta_accuracy_copy, n_ia, n_copy = zip(*deltas)
     return frontier_df.assign(delta_miou_ia=delta_miou_ia, delta_accuracy_ia=delta_accuracy_ia,
-                               delta_miou_copy=delta_miou_copy, delta_accuracy_copy=delta_accuracy_copy)
+                               delta_miou_copy=delta_miou_copy, delta_accuracy_copy=delta_accuracy_copy,
+                               n_ia=n_ia, n_copy=n_copy)
 
 def sweep_rules(tab, cfg, frontier_df, rules_sweep):
     rows = []
@@ -336,15 +341,15 @@ def sweep_rules(tab, cfg, frontier_df, rules_sweep):
             if selected is None:
                 continue
 
-            delta_miou_ia, delta_accuracy_ia, delta_miou_copy, delta_accuracy_copy = \
+            delta_miou_ia, delta_accuracy_ia, delta_miou_copy, delta_accuracy_copy, n_ia, n_copy = \
                 cached_deltas(selected.t_l, selected.t_h)
             rows.append((max_ia_risk, max_copy_risk, min_speedup,
                          selected.t_l, selected.t_h, selected.speedup, selected.ia_risk, selected.copy_risk,
-                         delta_miou_ia, delta_accuracy_ia, delta_miou_copy, delta_accuracy_copy))
+                         delta_miou_ia, delta_accuracy_ia, delta_miou_copy, delta_accuracy_copy, n_ia, n_copy))
 
     columns = ["max_ia_risk", "max_copy_risk", "min_speedup",
                "t_l", "t_h", "speedup", "ia_risk", "copy_risk",
-               "delta_miou_ia", "delta_accuracy_ia", "delta_miou_copy", "delta_accuracy_copy"]
+               "delta_miou_ia", "delta_accuracy_ia", "delta_miou_copy", "delta_accuracy_copy", "n_ia", "n_copy"]
     return pd.DataFrame(rows, columns=columns)
 
 # PLOT
