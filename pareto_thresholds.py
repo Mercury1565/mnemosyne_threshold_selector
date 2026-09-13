@@ -14,12 +14,17 @@ import numpy as np, pandas as pd
 from scipy.stats import beta
 import matplotlib; matplotlib.use("Agg"); import matplotlib.pyplot as plt
 
-SHEET_SYNC_URL = "http://localhost:5678/webhook-test/mnemosyne/csv"
+SHEET_SYNC_URL = "http://localhost:5678/webhook/mnemosyne/csv"
 DOC_ID = "1UbNfo8payXR623W4ymE0Exm8tiffItqCKF0xU1_1cjI"
 
-def sync_csv_to_sheet(csv_path):
+def sync_csv_to_sheet(csv_path, sheet_name=None, sheet_name_prefix=None):
     """Push a written CSV to the Google Sheet webhook (sheet name = file's basename)."""
-    sheet_name = os.path.splitext(os.path.basename(csv_path))[0]
+    if not sheet_name:
+        sheet_name = os.path.splitext(os.path.basename(csv_path))[0]
+
+    if sheet_name_prefix:
+        sheet_name = sheet_name_prefix + sheet_name
+
     try:
         subprocess.run(
             ["curl", "-X", "POST", "-F", f"docId={DOC_ID}", "-F", f"sheetName={sheet_name}", "-F", f"csv=@{csv_path}", SHEET_SYNC_URL],
@@ -402,8 +407,6 @@ def plot_thresholds_vs_tolerance(constrained_df, out_path):
 def run_combo(base_cfg, combo):
     """Run the full threshold-selection pipeline for one (model, dataset) combo."""
     print(f"\n{'=' * 60}\n{combo['model']} + {combo['oracle_dataset']}\n{'=' * 60}")
-    if combo["model"] == "pvrcnn":
-        print("! frame alignment for pvrcnn+kitti is lower-confidence than the other combos (see load())")
 
     cfg = dict(base_cfg, **combo)
     cfg["out_dir"] = os.path.join(base_cfg["out_dir"], f"{combo['model']}_{combo['oracle_dataset']}")
@@ -425,17 +428,14 @@ def run_combo(base_cfg, combo):
     print(f"joined rows: {len(tab)}")
     print(f"swept {len(sweep_df)} (t_l, t_h) pairs; {len(frontier_df)} on the Pareto frontier")
 
-    print(f"\nrules: max_ia_risk={rules['max_ia_risk']}  max_copy_risk={rules['max_copy_risk']}  "
-          f"min_speedup={rules['min_speedup']}")
     if selected is None:
         print("selected: none -- no frontier pair satisfies these rules")
     else:
         print(f"selected: t_l={selected.t_l}  t_h={selected.t_h}  speedup={selected.speedup:.3f}  "
               f"ia_risk={selected.ia_risk:.3f}  copy_risk={selected.copy_risk:.3f}")
 
+    # get frontier
     frontier_display = frontier_with_validity(frontier_with_deltas(frontier_df, tab, cfg), rules)
-    print("\nPareto frontier:")
-    print(frontier_display.round(3).to_string(index=False))
 
     # best t_l/t_h across the full range of a shared risk cap
     constrained_df = constrained_thresholds(frontier_df, cfg["RISK_TOLERANCE_GRID"])
@@ -445,19 +445,21 @@ def run_combo(base_cfg, combo):
     tolerance_png = os.path.join(cfg["out_dir"], cfg["tolerance_plot_png"])
     frontier_csv = os.path.join(cfg["out_dir"], frontier_csv_name(rules))
     frontier_display.to_csv(frontier_csv, index=False)
-    sync_csv_to_sheet(frontier_csv)
-    print(f"\nfrontier (valid/invalid split): {frontier_csv}")
+
+    # sync to google sheet
+    sheet_name_prefix = combo['model'] + '+' + combo['oracle_dataset'] + '_'
+    sync_csv_to_sheet(frontier_csv, sheet_name_prefix=sheet_name_prefix)
 
     plot_threshold_curves(t_h_curve, t_l_curve, ref_t_l, ref_t_h, rules, cfg, curves_png)
     plot_thresholds_vs_tolerance(constrained_df, tolerance_png)
 
     rules_sweep_df = sweep_rules(tab, cfg, frontier_df, RULES_SWEEP)
-    total_combos = (len(RULES_SWEEP["max_ia_risk_grid"]) * len(RULES_SWEEP["max_copy_risk_grid"])
-                     * len(RULES_SWEEP["min_speedup_grid"]))
     rules_sweep_csv = os.path.join(cfg["out_dir"], cfg["rules_sweep_csv"])
     rules_sweep_df.to_csv(rules_sweep_csv, index=False)
-    sync_csv_to_sheet(rules_sweep_csv)
-    print(f"\nrules sweep: {len(rules_sweep_df)} feasible of {total_combos} combinations -> {rules_sweep_csv}")
+
+    # sync to google sheet
+    sheet_name_prefix = combo['model'] + '+' + combo['oracle_dataset'] + '_'
+    sync_csv_to_sheet(frontier_csv, sheet_name_prefix=sheet_name_prefix)
 
     return dict(model=combo["model"], dataset=combo["oracle_dataset"], joined_rows=len(tab), selected=selected)
 
@@ -472,7 +474,10 @@ if __name__ == "__main__":
     summary_df = pd.DataFrame(summary_rows, columns=["model", "dataset", "joined_rows", "t_l", "t_h", "speedup"])
     summary_csv = os.path.join(CONFIG["out_dir"], "summary_all_combos.csv")
     summary_df.to_csv(summary_csv, index=False)
+
+    # sync to google sheet    
     sync_csv_to_sheet(summary_csv)
+
     print(f"\n{'=' * 60}\nall combos\n{'=' * 60}")
     print(summary_df.round(3).to_string(index=False))
     print(f"\nsummary: {summary_csv}")
