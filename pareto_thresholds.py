@@ -302,6 +302,13 @@ def region_deltas(tab, cfg, t_l, t_h):
 
     return delta_miou_ia, delta_accuracy_ia, delta_miou_copy, delta_accuracy_copy
 
+def frontier_with_deltas(frontier_df, tab, cfg):
+    """Frontier rows annotated with mean delta mIoU/accuracy in each region."""
+    deltas = [region_deltas(tab, cfg, row.t_l, row.t_h) for row in frontier_df.itertuples()]
+    delta_miou_ia, delta_accuracy_ia, delta_miou_copy, delta_accuracy_copy = zip(*deltas)
+    return frontier_df.assign(delta_miou_ia=delta_miou_ia, delta_accuracy_ia=delta_accuracy_ia,
+                               delta_miou_copy=delta_miou_copy, delta_accuracy_copy=delta_accuracy_copy)
+
 def sweep_rules(tab, cfg, frontier_df, rules_sweep):
     rows = []
     deltas_cache = {}
@@ -426,7 +433,7 @@ def run_combo(base_cfg, combo):
         print(f"selected: t_l={selected.t_l}  t_h={selected.t_h}  speedup={selected.speedup:.3f}  "
               f"ia_risk={selected.ia_risk:.3f}  copy_risk={selected.copy_risk:.3f}")
 
-    frontier_display = frontier_with_validity(frontier_df, rules)
+    frontier_display = frontier_with_validity(frontier_with_deltas(frontier_df, tab, cfg), rules)
     print("\nPareto frontier:")
     print(frontier_display.round(3).to_string(index=False))
 
