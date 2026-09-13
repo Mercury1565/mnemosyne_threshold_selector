@@ -1,22 +1,32 @@
 """
-Pareto-frontier threshold selection for the 3-mode reuse pipeline (detection copy / IA reuse / fresh)
+Pareto-frontier threshold selection for the 3-mode reuse pipeline (copy / IA reuse / fresh).
+Sweeps every (t_l, t_h) pair, keeps the non-dominated frontier, applies RULES to pick the
+fastest pair that's still safe enough. Runs once per combo in COMBOS.
 
-Sweeps every (t_l, t_h) pair on GRID, keeps the non-dominated (speedup, ia_risk, copy_risk) frontier,
-then applies RULES (max_ia_risk, max_copy_risk, optional min_speedup) to pick the fastest pair that's
-still safe enough.
-
-Usage:  python pareto_thresholds.py                                    (edit CONFIG/RULES below)
+Usage:  python pareto_thresholds.py
         python pareto_thresholds.py --max-ia-risk 0.2 --max-copy-risk 0.1 --min-speedup 5
-                                                                         (override RULES for one run)
-
-Outputs (outputs/): pareto_threshold_curves.png, pareto_thresholds_vs_tolerance.png, rules_sweep.csv
 """
 import os
 import itertools
 import argparse
+import subprocess
 import numpy as np, pandas as pd
 from scipy.stats import beta
 import matplotlib; matplotlib.use("Agg"); import matplotlib.pyplot as plt
+
+SHEET_SYNC_URL = "http://localhost:5678/webhook-test/mnemosyne/csv"
+DOC_ID = "1UbNfo8payXR623W4ymE0Exm8tiffItqCKF0xU1_1cjI"
+
+def sync_csv_to_sheet(csv_path):
+    """Push a written CSV to the Google Sheet webhook (sheet name = file's basename)."""
+    sheet_name = os.path.splitext(os.path.basename(csv_path))[0]
+    try:
+        subprocess.run(
+            ["curl", "-X", "POST", "-F", f"docId={DOC_ID}", "-F", f"sheetName={sheet_name}", "-F", f"csv=@{csv_path}", SHEET_SYNC_URL],
+            check=True, capture_output=True, text=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        print(f"! sheet sync failed for {csv_path}: {e}")
 
 # CONFIG
 CONFIG = dict(
@@ -54,8 +64,7 @@ RULES_SWEEP = dict(
     min_speedup_grid   = [None, 2.0, 4.0, 6.0, 8.0, 10.0, 12.0, 14.0, 16.0, 18.0, 20.0],
 )
 
-# RULES -- the algorithmic selection criteria. Tweak these and re-run to see how the
-# selected (t_l, t_h) moves.
+# RULES -- the algorithmic selection criteria.
 RULES = dict(
     max_ia_risk = 0.30,     # reject any pair whose IA-region risk bound exceeds this
     max_copy_risk = 0.30,   # reject any pair whose copy-region risk bound exceeds this
@@ -63,7 +72,7 @@ RULES = dict(
 )
 
 def rules_with_overrides(rules):
-    """RULES, with any provided --flags overriding their matching key for this run."""
+    """Override RULES with any provided --flags."""
     parser = argparse.ArgumentParser(description="Override RULES for this run.")
     parser.add_argument("--max-ia-risk", type=float, default=None)
     parser.add_argument("--max-copy-risk", type=float, default=None)
@@ -77,13 +86,8 @@ def rules_with_overrides(rules):
     return overridden
 
 def scene_key(scene_series, oracle_dataset):
-    """Canonical join key per scene. KITTI's three source files spell scene
-    identifiers differently ('0001' vs '1' vs '2011_09_26_drive_0001_sync'); nuScenes
-    and Waymo already match exactly across files, so this is a no-op for them.
-    The drive number is whatever follows 'drive_' when present (tier3's format --
-    a plain '(\\d+)' would wrongly grab the leading year instead); the plain
-    deltas/oracle formats have no 'drive_' prefix, so they fall back to their own
-    (already-bare) digits."""
+    """Canonical join key per scene. KITTI's files spell scenes differently
+    ('0001' vs '1' vs '..._drive_0001_sync'); no-op for nuScenes/Waymo."""
     if oracle_dataset == "kitti":
         scene_str = scene_series.astype(str)
         drive_number = scene_str.str.extract(r"drive_(\d+)")[0]
@@ -125,12 +129,8 @@ def load(cfg):
     return joined
 
 def SCORE_GRID(tab, min_threshold):
-    """Candidate score thresholds. Floored to the data's own min score (rounded down
-    to the nearest 0.01), same as before -- but never below `min_threshold`, regardless
-    of what the data's own minimum is. This is a hard domain floor: below it, a frame
-    is trusted with neither IA reuse nor copy, no matter what an aggregate risk bound
-    over the region says -- a thin, statistically-lucky sample at the extreme low end
-    (e.g. score == 0) shouldn't be able to argue its way into skipping fresh inference."""
+    """Candidate score thresholds: data's own min score, floored to min_threshold --
+    below that, fresh inference is mandatory no matter what the risk bound says."""
     data_floor = np.floor(tab.score.min() * 100) / 100
     floor = max(data_floor, min_threshold)
     return np.round(np.arange(floor, 1.001, 0.01), 3)
@@ -245,8 +245,7 @@ def pareto_front(sweep_df):
     return sweep_df[~is_dominated].copy()
 
 def constrained_thresholds(frontier_df, risk_grid):
-    """For each risk tolerance cap, the fastest frontier pair whose ia_risk and copy_risk
-    both fit under that cap. NaN where nothing on the frontier is feasible yet."""
+    """Fastest frontier pair under each shared risk cap; NaN where none qualify."""
     rows = []
     for max_risk in risk_grid:
         feasible = frontier_df[(frontier_df.ia_risk <= max_risk) & (frontier_df.copy_risk <= max_risk)]
@@ -265,10 +264,8 @@ def rules_mask(frontier_df, rules):
     return mask
 
 def frontier_with_validity(frontier_df, rules):
-    """Full frontier for the current rules, annotated with a 'valid' column.
-    Valid rows first (sorted by speedup desc), then invalid rows (also sorted by
-    speedup desc) -- so the top of the file is always the best real options, and
-    the bottom documents how far away the disqualified ones were."""
+    """Full frontier tagged 'valid'/'invalid' against the rules; valid rows first,
+    each half sorted by speedup desc."""
     annotated = frontier_df.assign(valid=rules_mask(frontier_df, rules))
     valid_rows = annotated[annotated.valid].sort_values("speedup", ascending=False)
     invalid_rows = annotated[~annotated.valid].sort_values("speedup", ascending=False)
@@ -282,8 +279,7 @@ def frontier_csv_name(rules):
     return name + ".csv"
 
 def select_thresholds(frontier_df, rules):
-    """Fastest frontier pair whose ia_risk/copy_risk both satisfy the rules.
-    Returns None if no pair qualifies."""
+    """Fastest frontier pair satisfying the rules, or None if none qualify."""
     feasible = frontier_df[rules_mask(frontier_df, rules)]
     if len(feasible) == 0:
         return None
@@ -341,9 +337,7 @@ def sweep_rules(tab, cfg, frontier_df, rules_sweep):
 
 # PLOT
 def plot_threshold_curves(t_h_curve, t_l_curve, ref_t_l, ref_t_h, rules, cfg, out_path):
-    """Four panels, two continuous lines each: t_h swept (t_l fixed at ref_t_l) and
-    t_l swept (t_h fixed at ref_t_h). Both thresholds visible in every panel.
-    Score threshold is the x-axis; the metric is the y-axis."""
+    """Four panels: t_h swept (t_l fixed) and t_l swept (t_h fixed), score on x-axis."""
     fig, axes = plt.subplots(2, 2, figsize=(11, 8), sharex=True)
 
     best_t_h_row = t_h_curve[t_h_curve.threshold == ref_t_h].iloc[0]
@@ -436,7 +430,7 @@ def run_combo(base_cfg, combo):
     print("\nPareto frontier:")
     print(frontier_display.round(3).to_string(index=False))
 
-    # If I swept a single shared risk tolerance across its whole range, how would the best-achievable t_l/t_h move at every level?
+    # best t_l/t_h across the full range of a shared risk cap
     constrained_df = constrained_thresholds(frontier_df, cfg["RISK_TOLERANCE_GRID"])
 
     os.makedirs(cfg["out_dir"], exist_ok=True)
@@ -444,6 +438,7 @@ def run_combo(base_cfg, combo):
     tolerance_png = os.path.join(cfg["out_dir"], cfg["tolerance_plot_png"])
     frontier_csv = os.path.join(cfg["out_dir"], frontier_csv_name(rules))
     frontier_display.to_csv(frontier_csv, index=False)
+    sync_csv_to_sheet(frontier_csv)
     print(f"\nfrontier (valid/invalid split): {frontier_csv}")
 
     plot_threshold_curves(t_h_curve, t_l_curve, ref_t_l, ref_t_h, rules, cfg, curves_png)
@@ -454,6 +449,7 @@ def run_combo(base_cfg, combo):
                      * len(RULES_SWEEP["min_speedup_grid"]))
     rules_sweep_csv = os.path.join(cfg["out_dir"], cfg["rules_sweep_csv"])
     rules_sweep_df.to_csv(rules_sweep_csv, index=False)
+    sync_csv_to_sheet(rules_sweep_csv)
     print(f"\nrules sweep: {len(rules_sweep_df)} feasible of {total_combos} combinations -> {rules_sweep_csv}")
 
     return dict(model=combo["model"], dataset=combo["oracle_dataset"], joined_rows=len(tab), selected=selected)
@@ -469,6 +465,7 @@ if __name__ == "__main__":
     summary_df = pd.DataFrame(summary_rows, columns=["model", "dataset", "joined_rows", "t_l", "t_h", "speedup"])
     summary_csv = os.path.join(CONFIG["out_dir"], "summary_all_combos.csv")
     summary_df.to_csv(summary_csv, index=False)
+    sync_csv_to_sheet(summary_csv)
     print(f"\n{'=' * 60}\nall combos\n{'=' * 60}")
     print(summary_df.round(3).to_string(index=False))
     print(f"\nsummary: {summary_csv}")
