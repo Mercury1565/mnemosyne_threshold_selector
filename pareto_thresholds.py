@@ -52,6 +52,8 @@ CONFIG = dict(
     curves_plot_png = "pareto_threshold_curves.png",                # 4-panel risk/speedup/delta curves vs threshold
     tolerance_plot_png = "pareto_thresholds_vs_tolerance.png",      # t_l/t_h vs shared risk tolerance cap
     rules_sweep_csv = "rules_sweep.csv",                            # RULES_SWEEP permutation results
+    save_joined_table = True,                                       # write the full joined tab (see load()) per combo
+    joined_table_csv = "joined_table.csv",                          # so any row's n_ia/n_copy can be traced by hand
 )
 
 COMBOS = [
@@ -415,9 +417,17 @@ def run_combo(base_cfg, combo):
 
     cfg = dict(base_cfg, **combo)
     cfg["out_dir"] = os.path.join(base_cfg["out_dir"], f"{combo['model']}_{combo['oracle_dataset']}")
+    sheet_name_prefix = combo['model'] + '+' + combo['oracle_dataset'] + '_'
 
     tab = load(cfg)
     cfg["GRID"] = SCORE_GRID(tab, cfg["MIN_SCORE_THRESHOLD"])
+
+    if cfg.get("save_joined_table"):
+        os.makedirs(cfg["out_dir"], exist_ok=True)
+        joined_table_csv = os.path.join(cfg["out_dir"], cfg["joined_table_csv"])
+        tab.to_csv(joined_table_csv, index=False)
+        sync_csv_to_sheet(joined_table_csv, sheet_name_prefix=sheet_name_prefix)
+        print(f"joined table: {joined_table_csv}")
 
     rules = rules_with_overrides(RULES)
 
@@ -450,9 +460,6 @@ def run_combo(base_cfg, combo):
     tolerance_png = os.path.join(cfg["out_dir"], cfg["tolerance_plot_png"])
     frontier_csv = os.path.join(cfg["out_dir"], frontier_csv_name(rules))
     frontier_display.to_csv(frontier_csv, index=False)
-
-    # sync to google sheet
-    sheet_name_prefix = combo['model'] + '+' + combo['oracle_dataset'] + '_'
     sync_csv_to_sheet(frontier_csv, sheet_name_prefix=sheet_name_prefix)
 
     plot_threshold_curves(t_h_curve, t_l_curve, ref_t_l, ref_t_h, rules, cfg, curves_png)
@@ -463,8 +470,7 @@ def run_combo(base_cfg, combo):
     rules_sweep_df.to_csv(rules_sweep_csv, index=False)
 
     # sync to google sheet
-    sheet_name_prefix = combo['model'] + '+' + combo['oracle_dataset'] + '_'
-    sync_csv_to_sheet(frontier_csv, sheet_name_prefix=sheet_name_prefix)
+    sync_csv_to_sheet(rules_sweep_csv, sheet_name_prefix=sheet_name_prefix)
 
     return dict(model=combo["model"], dataset=combo["oracle_dataset"], joined_rows=len(tab), selected=selected)
 
