@@ -16,8 +16,9 @@ import matplotlib; matplotlib.use("Agg"); import matplotlib.pyplot as plt
 
 SHEET_SYNC_URL = "http://localhost:5678/webhook/mnemosyne/csv"
 DOC_ID = "1UbNfo8payXR623W4ymE0Exm8tiffItqCKF0xU1_1cjI"
+DOC_ID_2 = "16khxRIZJhrPIY_GcO3rhT-GXzC-n-YRLz30h6KhQnEg"
 
-def sync_csv_to_sheet(csv_path, sheet_name=None, sheet_name_prefix=None):
+def sync_csv_to_sheet(csv_path, sheet_name=None, sheet_name_prefix=None, docId=DOC_ID):
     """Push a written CSV to the Google Sheet webhook (sheet name = file's basename)."""
     if not sheet_name:
         sheet_name = os.path.splitext(os.path.basename(csv_path))[0]
@@ -27,7 +28,7 @@ def sync_csv_to_sheet(csv_path, sheet_name=None, sheet_name_prefix=None):
 
     try:
         subprocess.run(
-            ["curl", "-X", "POST", "-F", f"docId={DOC_ID}", "-F", f"sheetName={sheet_name}", "-F", f"csv=@{csv_path}", SHEET_SYNC_URL],
+            ["curl", "-X", "POST", "-F", f"docId={docId}", "-F", f"sheetName={sheet_name}", "-F", f"csv=@{csv_path}", SHEET_SYNC_URL],
             check=True, capture_output=True, text=True,
         )
     except (subprocess.CalledProcessError, FileNotFoundError) as e:
@@ -431,7 +432,7 @@ def run_combo(base_cfg, combo):
         os.makedirs(cfg["out_dir"], exist_ok=True)
         joined_table_csv = os.path.join(cfg["out_dir"], cfg["joined_table_csv"])
         tab.to_csv(joined_table_csv, index=False)
-        sync_csv_to_sheet(joined_table_csv, sheet_name_prefix=sheet_name_prefix)
+        sync_csv_to_sheet(joined_table_csv, sheet_name_prefix=sheet_name_prefix, docId=DOC_ID_2)
         print(f"joined table: {joined_table_csv}")
 
     rules = rules_with_overrides(RULES)
